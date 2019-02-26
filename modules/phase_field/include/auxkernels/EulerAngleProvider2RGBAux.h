@@ -46,6 +46,9 @@ protected:
   /// Type of value to be outputted
   const unsigned int _output_type;
 
+  /// Coupled integrated_index variable
+  const VariableValue & _integrated_index;
+
   /// Object providing the Euler angles
   const EulerAngleProvider & _euler;
 
@@ -60,4 +63,7 @@ protected:
 
   /// Vector containing values for color in regions without grains
   const Point _no_grain_color;
+
+  /// Vector containing values of color for new grains created by GrainTracker
+  const Point _new_grain_color;
 };

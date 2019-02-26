@@ -12,6 +12,7 @@
 #include "EulerAngleProvider.h"
 #include "Euler2RGB.h"
 #include "EBSDReader.h"
+#include "MathUtils.h"
 
 registerMooseObject("PhaseFieldApp", EulerAngleProvider2RGBAux);
 
@@ -32,6 +33,8 @@ validParams<EulerAngleProvider2RGBAux>()
       "crystal_structure", structure_enum, "Crystal structure of the material");
   MooseEnum output_types = MooseEnum("red green blue scalar", "scalar");
   params.addParam<MooseEnum>("output_type", output_types, "Type of value that will be outputted");
+  params.addCoupledVar("integrated_index",
+                       "The coupled aux variable representing the integrated feature index");
   params.addRequiredParam<UserObjectName>("euler_angle_provider",
                                           "Name of Euler angle provider user object");
   params.addRequiredParam<UserObjectName>("grain_tracker",
@@ -40,6 +43,10 @@ validParams<EulerAngleProvider2RGBAux>()
       "no_grain_color",
       Point(0, 0, 0),
       "RGB value of color used to represent area with no grains, defaults to black");
+  params.addParam<Point>(
+      "new_grain_color",
+      Point(1, 1, 1),
+      "RGB value of color used to represent new grains created by GrainTracker, defaults to white");
   return params;
 }
 
@@ -49,10 +56,12 @@ EulerAngleProvider2RGBAux::EulerAngleProvider2RGBAux(const InputParameters & par
     _sd(getParam<MooseEnum>("sd")),
     _xtal_class(getParam<MooseEnum>("crystal_structure")),
     _output_type(getParam<MooseEnum>("output_type")),
+    _integrated_index(isCoupled("integrated_index") ? coupledValue("integrated_index") : _zero),
     _euler(getUserObject<EulerAngleProvider>("euler_angle_provider")),
     _ebsd_reader(isParamValid("phase") ? dynamic_cast<const EBSDReader *>(&_euler) : nullptr),
     _grain_tracker(getUserObject<GrainTrackerInterface>("grain_tracker")),
-    _no_grain_color(getParam<Point>("no_grain_color"))
+    _no_grain_color(getParam<Point>("no_grain_color")),
+    _new_grain_color(getParam<Point>("new_grain_color"))
 {
 }
 
@@ -68,13 +77,19 @@ EulerAngleProvider2RGBAux::getNumGrains() const
 void
 EulerAngleProvider2RGBAux::precalculateValue()
 {
-  const auto grain_id =
-      _grain_tracker.getEntityValue(isNodal() ? _current_node->id() : _current_elem->id(),
-                                    FeatureFloodCount::FieldType::UNIQUE_REGION,
-                                    0);
+  /* Recover Euler angles for current grain and assign correct RGB value from Euler2RGB
+     Note: if integrated_index is used, the returned index needs to be rounded to
+     the nearest integer value to remove roundoff errors caused by aux variables
+     being stored as doubles instead of integers. */
 
-  // Recover Euler angles for current grain and assign correct RGB value either
-  // from Euler2RGB or from _no_grain_color
+  const auto grain_id =
+      isCoupled("integrated_index")
+          ? MathUtils::round(_integrated_index[0])
+          : _grain_tracker.getEntityValue(isNodal() ? _current_node->id() : _current_elem->id(),
+                                          FeatureFloodCount::FieldType::UNIQUE_REGION,
+                                          0);
+
+  // Assign _no_grain_color to anti-grain features such as voids with default color of black
   Point RGB;
   if (grain_id < 0)
     RGB = _no_grain_color;
@@ -88,20 +103,28 @@ EulerAngleProvider2RGBAux::precalculateValue()
 
     auto global_id =
         _phase != libMesh::invalid_uint ? _ebsd_reader->getGlobalID(_phase, grain_id) : grain_id;
+
+    /* Handle case when GrainTracker creates a new grain. These are typically split grains
+       that do not match-up due to a rapidly evolving adaptive mesh between time steps.
+       These grains do not have a valid IPF color so they will be assigned _new_grain_color
+       with a default color of white. */
+
     const auto num_grns = getNumGrains();
     if (global_id > num_grns)
-      mooseError(" global_id ", global_id, " out of index range");
+      RGB = _new_grain_color;
+    else
+    {
+      // Retrieve Euler Angle values from the EulerAngleProvider
+      const RealVectorValue & angles = _euler.getEulerAngles(global_id);
 
-    // Retrieve Euler Angle values from the EulerAngleProvider
-    const RealVectorValue & angles = _euler.getEulerAngles(global_id);
-
-    // Convert Euler Angle values to RGB colorspace for visualization purposes
-    RGB = euler2RGB(_sd,
-                    angles(0) / 180.0 * libMesh::pi,
-                    angles(1) / 180.0 * libMesh::pi,
-                    angles(2) / 180.0 * libMesh::pi,
-                    1.0,
-                    _xtal_class);
+      // Convert Euler Angle values to RGB colorspace for visualization purposes
+      RGB = euler2RGB(_sd,
+                      angles(0) / 180.0 * libMesh::pi,
+                      angles(1) / 180.0 * libMesh::pi,
+                      angles(2) / 180.0 * libMesh::pi,
+                      1.0,
+                      _xtal_class);
+    }
   }
 
   // Create correct scalar output

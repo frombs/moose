@@ -36,6 +36,9 @@ protected:
   /// Optional phase number needed for global grain index retrieval
   const unsigned int _phase;
 
+  /// Coupled integrated_index variable
+  const VariableValue & _integrated_index;
+
   /// EBSD reader user object
   const EBSDReader & _ebsd_reader;
 
@@ -54,4 +57,3 @@ protected:
   /// precalculated element value
   Real _value;
 };
-
